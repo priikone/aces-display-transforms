@@ -1,0 +1,1308 @@
+kernel Okish_DRT_v1_Kernel : ImageComputationKernel<ePixelWise>
+{
+  Image<eRead, eAccessPoint, eEdgeClamped> src; // the input image
+  Image<eWrite> dst; // the output image
+
+  param:
+    //
+    // Input Parameters
+    //
+
+    // Encoding of the Input Image
+    // 0: Linear
+    // 1: ACEScct
+    // 2: sRGB
+    // 3: BT.1886 (Gamma 2.4)
+    // 4: Gamma 2.6
+    // 5: ST2084
+    int encodingIn;
+
+    // Primaries of the Input Image
+    // 0: AP0-ACES
+    // 1: AP1-ACES
+    // 2: sRGB/Rec.709-D65
+    // 3: Rec.2020-D65
+    // 4: P3-D65
+    // 5: P3-DCI
+    int primariesIn;
+
+    // Chomatic Adaptation Transform to Use
+    // 0: None
+    // 1: XYZ Scaling
+    // 2: Bradford
+    // 3: CAT02
+    // 4: Zhai2018 (two-step)
+    int catType;
+
+    // Disable Degree of Adaptation Model for Zhai2018 CAT
+    // This is only effective if the limit primaries have a non-D65 white point
+    // since the input conversion is assumed to be fully adapted
+    // and the output conversion does not apply a CAT
+    bool discountIlluminant;
+
+    // Reference Luminance in Cd/sqm
+    float referenceLuminance;
+
+    // Background Luminance in Cd/sqm
+    float backgroundLuminance;
+
+    // Viewing Conditions (for output)
+    // 0: Dark
+    // 1: Dim
+    // 2: Average
+    int viewingConditions;
+
+    //
+    // Tonescale Parameters
+    //
+
+    // Use lightness instead of mid(rgb) norm
+    bool useLightness;
+
+    // SSTS Luminances Min/Mid/Peak
+    float3 sstsLuminance;
+
+    //
+    // Gamut Mapping Parameters
+    //
+
+    // Primaries of the Target Gamut
+    // 0: AP0-ACES
+    // 1: AP1-ACES
+    // 2: sRGB/Rec.709-D65
+    // 3: Rec.2020-D65
+    // 4: P3-D65
+    // 5: P3-DCI
+    int primariesLimit;
+
+    // Toggle Gamut Compression
+    bool applyGamutCompression;
+    bool applyGamutApproximation;
+
+    // MacAdam limit
+    bool applyMacAdamLimit;
+
+    // Blend Between Compressing towards
+    // Target Gamut Cusp Luminance (0.0)
+    // and SSTS Mid Luminance (1.0)
+    float cuspMidBlend;
+
+    // the distance of the compression focal point
+    // from the achromatic axis
+    // normalised to the distance of the gamut cusp
+    float focusDistance;
+
+    // Gamut Compression Fuction Parameters
+    // Threshold / Limit / Power
+    float3 compressionFuncParams;
+
+    // How much the edges of the target RGB cube are smoothed when finding the gamut boundary 
+    // in order to reduce visible contours at the gamut cusps
+    float smoothCusps;
+
+    // When solving for the target gamut boundary
+    // how many search interval halving steps to perform
+    int boundarySolvePrecision;
+
+    // Number of iterations to converge on the uncompressed J value 
+    // Because of the compression focus point changes depending on the J value of the uncompressed sample
+    // we cannot perfectly invert it since the original J value has now been changed by the forward compression
+    // we can converge on a reasonable approximation of the original J value by iterating the inverse compression
+    // although this is quite an expensive operation
+    int inverseSolverIterations;
+
+    //
+    // Output Parameters
+    //
+
+    // Encoding of the Output Image
+    // 0: Linear
+    // 1: ACEScct
+    // 2: sRGB
+    // 3: BT.1886 (Gamma 2.4)
+    // 4: Gamma 2.6
+    // 5: ST2084
+    int encodingOut;
+
+    // Primaries of the Output Image
+    // 0: AP0-ACES
+    // 1: AP1-ACES
+    // 2: sRGB/Rec.709-D65
+    // 3: Rec.2020-D65
+    // 4: P3-D65
+    // 5: P3-DCI
+    int primariesOut;
+
+    // Clamp output values to 0.0 - 1.0
+    bool clampOutput;
+
+    //
+    // Extra Parameters
+    //
+
+    // Toggle Inverse Transform
+    bool invert;
+
+    // Tonescale select
+    bool mmTonescaleMode;
+    // Tonescale parameters
+    float Lp;
+    float su;
+    float c0;
+    float cs;
+    float c1;
+    float p;
+    float w1;
+    float s1;
+    float ex;
+    float eb;
+    float e0;
+    float s0;
+    float fl;
+    float mmScaleFactor;
+
+    float desat_offset;
+    float chroma_scale;
+
+  local:
+
+    // constants
+    float HALF_MIN;
+    float HALF_MAX;
+
+    // CAT vars
+    float cat_adaptDegree;
+
+    // ST2084 vars
+    float st2084_m_1;
+    float st2084_m_2;
+    float st2084_c_1;
+    float st2084_c_2;
+    float st2084_c_3;
+    float st2084_m_1_d;
+    float st2084_m_2_d;
+    float st2084_L_p;
+
+    // matrix vars
+    float3x3 identity_matrix;
+    float3x3 XYZ_to_LMS_Bradford;
+    float3x3 XYZ_to_LMS_CAT02;
+    float3x3 XYZ_to_LMS_M1;
+    float3x3 XYZ_to_LMS_M2;
+    float3x3 M_to_RGBish;
+
+    float3x3 XYZ_to_RGB_input;
+    float3x3 XYZ_to_RGB_limit;
+    float3x3 XYZ_to_RGB_output;
+
+    float3x3 RGB_to_XYZ_input;
+    float3x3 RGB_to_XYZ_limit;
+    float3x3 RGB_to_XYZ_output;
+
+    // white points
+    float3 d65White;
+    float3 inWhite;
+    float3 refWhite;
+
+    // the maximum RGB value of the limiting gamut
+    float boundaryRGB;
+
+    // the maximum lightness value of the limiting gamut
+    float limitLmax;
+
+    // the maximum colorfulness value of the limiting gamut
+    float limitCmax;
+
+    // the 1D LUT used for quickly findig the approximate limiting gamut cusp LCh coordinates
+    // the samples are spaced by HSV hue increments of the limiting RGB gamut
+    // so to find the correct entry for a given hue (h) value 
+    // one must search the table entries for the mathcing entry.z component
+    int gamutCuspTableSize;
+
+    // the 'gamutCuspTableUnsorted' table is populated
+    // in increments of H of the limiting gamut HSV space starting at H=0.0
+    // since it is unlikely that HSV.H=0 and LCh.h=0 line up
+    // the entries are then wrap-around shifted
+    // so that the 'gamutCuspTable' starts with the lowest LCh.h value
+    // both tables need to be declared here since tempoary array variables
+    // in the init() fuction seem to crash Nuke on some systems
+    float3 gamutCuspTableUnsorted[360];
+    float3 gamutCuspTable[360];
+
+    // local version of the public focusDistance parameter
+    // this one will be clamped to a value > 0.0
+    float focusDistanceClamped;
+
+    float3 gamutCornersTable[6];
+
+  void define()
+  {
+
+  }
+
+  // multiplies a 3D vector with a 3x3 matrix
+  float3 vector_dot( float3x3 m, float3 v)
+  {
+    float3 r = 1.0f;
+    for(int c = 0; c<3; c++)
+    {
+      r[c] = m[c][0]*v.x + m[c][1]*v.y + m[c][2]*v.z;
+    }
+
+    return r;
+  }
+
+  // linear interpolation between two values a & b with the bias t
+  float lerp(float a, float b, float t)
+  {
+    return a + t * (b - a);
+  }
+
+  // "safe" power function to avoid NANs or INFs when taking a fractional power of a negative base
+  // this one initially retured -pow(abs(b), e) for negative b
+  // but this ended up producing undesirable results in some cases
+  // so now it just returns 0.0 instead
+  float spow( float base, float exponent )
+  {
+    if(base < 0.0f && exponent != floor(exponent) )
+    {
+      return 0.0f;
+    }
+    else
+    {
+      return pow(base, exponent); 
+    }
+  }
+
+  // clamp the components of a 3D vector between a min & max value
+  float3 clamp3(float3 v, float min, float max)
+  {
+    v.x = clamp(v.x, min, max);
+    v.y = clamp(v.y, min, max);
+    v.z = clamp(v.z, min, max);
+    return v;
+  }
+
+  // convert radians to degrees
+  float degrees( float radians )
+  {
+    return radians * 180.0f / PI;
+  }
+
+  // convert degrees to radians
+  float radians( float degrees )
+  {
+    return degrees / 180.0f * PI;
+  }
+
+  // "PowerP" compression function (also used in the ACES Reference Gamut Compression transform)
+  // values of v above  'treshold' are compressed by a 'power' function
+  // so that an input value of 'limit' results in an output of 1.0
+  float compressPowerP( float v, float threshold, float limit, float power, int inverse )
+  {
+    float s = (limit-threshold)/pow(pow((1.0f-threshold)/(limit-threshold),-power)-1.0f,1.0f/power);
+
+    float vCompressed;
+
+    if( inverse )
+    {
+      vCompressed = (v<threshold||limit<1.0001f||v>threshold+s)?v:threshold+s*pow(-(pow((v-threshold)/s,power)/(pow((v-threshold)/s,power)-1.0f)),1.0f/power);
+    }
+    else
+    {
+      vCompressed = (v<threshold||limit<1.0001f)?v:threshold+s*((v-threshold)/s)/(pow(1.0f+pow((v-threshold)/s,power),1.0f/power));
+    }
+
+    return vCompressed;
+  }
+
+  // apply chromatic adaptation transform to 'XYZ' from 'XYZ_ws' to 'XYZ_wd' white points
+  // 'type' selects the cone fundamentals matrix
+  float3 apply_CAT( float3 XYZ, float3 XYZ_ws, float3 XYZ_wd, int type)
+  {
+    float3x3 XYZ_to_LMS;
+
+    if( type == 1 )
+    {
+      // XYZ Scaling
+      XYZ_to_LMS = identity_matrix;
+    }
+    else if( type == 2 )
+    {
+      // Bradford
+      XYZ_to_LMS = XYZ_to_LMS_Bradford;
+    }
+    else if( type == 3 )
+    {
+      // CAT02
+      XYZ_to_LMS = XYZ_to_LMS_CAT02;
+    }
+    else
+    {
+      // None
+      return XYZ;
+    }
+
+    float3 LMS_ws = vector_dot(XYZ_to_LMS, XYZ_ws);
+    float3 LMS_wd = vector_dot(XYZ_to_LMS, XYZ_wd);
+    float3x3 Mscale = identity_matrix;
+    Mscale[0][0] = LMS_wd.x / LMS_ws.x;
+    Mscale[1][1] = LMS_wd.y / LMS_ws.y;
+    Mscale[2][2] = LMS_wd.z / LMS_ws.z;
+
+    float3x3 M = XYZ_to_LMS.invert() * Mscale * XYZ_to_LMS;
+
+    return vector_dot(M, XYZ);
+  }
+
+  // check if the 3D point 'v' is inside a cube with the dimensions cubeSize x cubeSize x cubeSize 
+  // the 'smoothing' parameter rounds off the edges and corners of the cube with the exception of the 0,0,0 and cubeSize x cubeSize x cubeSize corners
+  // a smoothing value of 0.0 applies no smoothing and 1.0 the maximum amount (smoothing values > 1.0 result in undefined behavior )
+  int isInsideCube( float3 v, float cubeSize, float smoothing)
+  {
+    float3 normv = v / cubeSize;
+
+    float minv = min(normv.x, min(normv.y, normv.z));
+    float maxv = max(normv.x, max(normv.y, normv.z));
+
+    if( smoothing <= 0.0f )
+    {
+      // when not smoothing we can use a much simpler test
+      if(minv < 0.0f || maxv > 1.0f)
+      {
+        return 0;
+      }
+
+      return 1;
+    }
+
+    float3 clamped = normv;
+
+    float radius = smoothing/2.0f;
+
+    radius = clamp(radius*maxv*(1.0f-minv), 0.0f, radius);
+
+    clamped.x = clamp(normv.x, radius, 1.0f-radius);
+    clamped.y = clamp(normv.y, radius, 1.0f-radius);
+    clamped.z = clamp(normv.z, radius, 1.0f-radius);
+
+    if( length(normv - clamped ) > radius)
+    {
+      return 0;
+    }
+
+    return 1;
+  }
+
+  // convert ACEScct encoded values to linear
+  float ACEScct_to_linear( float v )
+  {
+    return v > 0.155251141552511f ? spow( 2.0f, v * 17.52f - 9.72f) : (v - 0.0729055341958355f) / 10.5402377416545f;
+  }
+
+  // encode linear values as ACEScct
+  float linear_to_ACEScct( float v )
+  {
+    return v > 0.0078125f ? (log2(v) + 9.72f) / 17.52f : 10.5402377416545f * v + 0.0729055341958355f;
+  }
+
+  // convert sRGB gamma encoded values to linear
+  float sRGB_to_linear( float v )
+  {
+    return v < 0.04045f ? v / 12.92f : spow((v + 0.055f) / 1.055f, 2.4f);
+  }
+
+  // encode linear values as sRGB gamma
+  float linear_to_sRGB( float v )
+  {
+    return v <= 0.0031308f ? 12.92f * v : 1.055 * (spow(v, 1.0f / 2.4f)) - 0.055f;
+  }
+
+  // convert ST2084 PQ encoded values to linear
+  float ST2084_to_linear( float v )
+  {
+    float V_p = spow(v, st2084_m_2_d);
+    return spow((max(0.0f, V_p - st2084_c_1) / (st2084_c_2 - st2084_c_3 * V_p)), st2084_m_1_d)*st2084_L_p;
+  }
+
+  // encode linear values as ST2084 PQ
+  float linear_to_ST2084( float v )
+  {
+    float Y_p = spow(max(0.0f, v) / st2084_L_p, st2084_m_1);
+
+    return spow((st2084_c_1 + st2084_c_2 * Y_p) / (st2084_c_3 * Y_p + 1.0f), st2084_m_2);
+  }
+
+  // decode value 'v' with the inverse of the selected encoding fuction to luminance
+  float encodingToLuminance(int encoding, float v)
+  {
+    if( encoding == 1 )
+    {
+      // ACEScct
+      return ACEScct_to_linear(v) * referenceLuminance;
+    }
+    else if( encoding == 2 )
+    {
+      // sRGB
+      return sRGB_to_linear(v) * referenceLuminance;
+    }
+    else if( encoding == 3 )
+    {
+      // BT.1886 (Gamma 2.4)
+      return spow(v, 2.4f) * referenceLuminance;
+    }
+    else if( encoding == 4 )
+    {
+      // Gamma 2.6
+      return spow(v, 2.6f) * referenceLuminance;
+    }
+    else if( encoding == 5 )
+    {
+      // ST2084
+      return ST2084_to_linear(v);
+    }
+    else
+    {
+      // Linear
+      // default
+      return v * referenceLuminance;
+    }
+  }
+
+  // decode the components of a 3D vector 'v' with the inverse of the selected encoding fuction to luminance
+  float3 encodingToLuminance3(int encoding, float3 v)
+  {
+    float3 lin;
+    lin.x = encodingToLuminance(encoding, v.x);
+    lin.y = encodingToLuminance(encoding, v.y);
+    lin.z = encodingToLuminance(encoding, v.z);
+
+    return lin;
+  }
+
+  // encode the linear luminance value 'v' with the encoding fuction selected by 'encoding'
+  float luminanceToEncoding(int encoding, float v)
+  {
+    if( encoding == 1 )
+    {
+      // ACEScct
+      return linear_to_ACEScct(v / referenceLuminance);
+    }
+    else if( encoding == 2 )
+    {
+      // sRGB
+      return linear_to_sRGB(v / referenceLuminance);
+    }
+    else if( encoding == 3 )
+    {
+      // BT.1886 (Gamma 2.4)
+      return spow(v / referenceLuminance, 1.0f/2.4f);
+    }
+    else if( encoding == 4 )
+    {
+      // Gamma 2.6
+      return spow(v / referenceLuminance, 1.0f/2.6f);
+    }
+    else if( encoding == 5 )
+    {
+      // ST2084
+      return linear_to_ST2084(v);
+    }
+    else
+    {
+      // Linear
+      // default
+      return v / referenceLuminance;
+    }
+  }
+
+  // encode the linear luminance value components of a 3D vector 'v' with the encoding fuction selected by 'encoding'
+  float3 luminanceToEncoding3(int encoding, float3 v)
+  {
+    float3 enc;
+    enc.x = luminanceToEncoding(encoding, v.x);
+    enc.y = luminanceToEncoding(encoding, v.y);
+    enc.z = luminanceToEncoding(encoding, v.z);
+
+    return enc;
+  }
+
+  float3 XYZ_to_Oklab_LMS(float3 XYZ)
+  {
+    float3 LMS = vector_dot(XYZ_to_LMS_M1, XYZ);
+    LMS.x = spow(LMS.x, 1.0f / 3.0f);
+    LMS.y = spow(LMS.y, 1.0f / 3.0f);
+    LMS.z = spow(LMS.z, 1.0f / 3.0f);
+    return LMS;
+  }
+
+  float3 Oklab_LMS_to_XYZ(float3 LMS)
+  {
+    LMS = LMS * LMS * LMS;
+    return vector_dot(XYZ_to_LMS_M1.invert(), LMS);
+  }
+
+  float3 Oklab_LMS_to_Lab(float3 LMS)
+  {
+    return vector_dot(XYZ_to_LMS_M2, LMS);
+  }
+
+  float3 Lab_to_Oklab_LMS(float3 lab)
+  {
+    return vector_dot(XYZ_to_LMS_M2.invert(), lab);
+  }
+
+  float3 Lab_to_LCh(float3 lab)
+  {
+    float3 lch;
+    lch.x = lab.x;
+    lch.y = sqrt(lab.y * lab.y + lab.z * lab.z);
+    lch.z = fmod(degrees(atan2(lab.z, lab.y)) + 360.0f, 360.0f);
+    return lch;
+  }
+
+  float3 LCh_to_Lab(float3 lch)
+  {
+    float3 lab;
+    float h = radians(lch.z);
+    lab.x = lch.x;
+    lab.y = lch.y * cos(h);
+    lab.z = lch.y * sin(h);
+    return lab;
+  }
+
+  float3 limit_RGB_to_LMS(float3 RGB)
+  {
+    float3 luminanceRGB = RGB * boundaryRGB * referenceLuminance;
+    float3 XYZ = vector_dot(RGB_to_XYZ_limit, luminanceRGB);
+    float3 LMS = XYZ_to_Oklab_LMS(XYZ);
+    return LMS;
+  }
+
+  float3 limit_RGB_to_LCh(float3 RGB)
+  {
+    float3 luminanceRGB = RGB * boundaryRGB * referenceLuminance;
+    float3 XYZ = vector_dot(RGB_to_XYZ_limit, luminanceRGB);
+    float3 LMS = XYZ_to_Oklab_LMS(XYZ);
+    return Lab_to_LCh(Oklab_LMS_to_Lab(LMS));
+  }
+
+  // convert RGB values in the input colorspace to XYZ D65
+  float3 input_RGB_to_XYZ(float3 inputRGB)
+  {
+    // clamp input to +/- HALF_MAX range (to remove inf values, etc.)
+    inputRGB = clamp3(inputRGB, -HALF_MAX, HALF_MAX);
+
+    // convert to linear XYZ luminance values
+    float3 luminanceRGB = encodingToLuminance3(encodingIn, inputRGB);
+    float3 luminanceXYZ = vector_dot(RGB_to_XYZ_input, luminanceRGB);
+
+    return apply_CAT(luminanceXYZ, inWhite, d65White, catType);
+  }
+
+  // convert XYZ D65 to RGB values in the output colorspace
+  float3 XYZ_to_output_RGB(float3 XYZ)
+  {
+    float3 luminanceXYZ = apply_CAT(XYZ, d65White, refWhite, catType);
+    float3 luminanceRGB = vector_dot(XYZ_to_RGB_output, luminanceXYZ);
+    float3 outputRGB = luminanceToEncoding3( encodingOut, luminanceRGB);
+
+    if (clampOutput)
+      outputRGB = clamp3(outputRGB, 0.0f, 1.0f);
+
+    return outputRGB;
+  }
+
+  // convert HSV cylindrical projection values to RGB
+  float3 HSV_to_RGB( float3 HSV )
+  {
+    float C = HSV.z*HSV.y;
+    float X = C*(1.0f-fabs(fmod(HSV.x*6.0f,2.0f)-1.0f));
+    float m = HSV.z-C;
+
+    float3 RGB;
+    RGB.x = (HSV.x<1.0f/6.0f?  C :HSV.x<2.0f/6.0f?  X :HSV.x<3.0f/6.0f?0.0f:HSV.x<4.0f/6.0f?0.0f:HSV.x<5.0f/6.0f?  X :  C )+m;
+    RGB.y = (HSV.x<1.0f/6.0f?  X :HSV.x<2.0f/6.0f?  C :HSV.x<3.0f/6.0f?  C :HSV.x<4.0f/6.0f?  X :HSV.x<5.0f/6.0f?0.0f:0.0f)+m;
+    RGB.z = (HSV.x<1.0f/6.0f?0.0f:HSV.x<2.0f/6.0f?0.0f:HSV.x<3.0f/6.0f?  X :HSV.x<4.0f/6.0f?  C :HSV.x<5.0f/6.0f?  C :  X )+m;
+    return RGB;
+  }
+
+  // convert RGB to HSV cylindrical projection values
+  float3 RGB_to_HSV( float3 RGB )
+  {
+    float cmax = max(RGB.x,max(RGB.y,RGB.z));
+    float cmin = min(RGB.x,min(RGB.y,RGB.z));
+    float delta = cmax-cmin;
+
+    float3 HSV;
+    HSV.x = delta==0.0f?0.0f:cmax==RGB.x?(fmod((RGB.y-RGB.z)/delta+6.0f,6.0f))/6.0f:cmax==RGB.y?(((RGB.z-RGB.x)/delta+2.0f)/6.0f):(((RGB.x-RGB.y)/delta+4.0f)/6.0f);
+    HSV.y = cmax == 0.0f ? 0.0f : delta / cmax;
+    HSV.z = cmax;
+    return HSV;
+  }
+
+  // retrieve the LC coordinates of the limiting gamut cusp at the hue slice 'h'
+  // cusps are very expensive to compute
+  // and the DRT is only using them for lightness mapping
+  // which does not require a high degree of accuracy
+  // so instead we use a pre-computed table of cusp points
+  // sampled at 1 degree hue intervals of the the RGB target gamut
+  // and lerp between them to get the approximate J & M values
+  float2 cuspFromTable(float h)
+  {
+    float3 lo;
+    float3 hi;
+
+    if( h <= gamutCuspTable[0].z )
+    {
+      lo = gamutCuspTable[gamutCuspTableSize-1];
+      lo.z = lo.z-360.0f;
+      hi = gamutCuspTable[0];
+    }
+    else if( h >= gamutCuspTable[gamutCuspTableSize-1].z )
+    {
+      lo = gamutCuspTable[gamutCuspTableSize-1];
+      hi = gamutCuspTable[0];
+      hi.z = hi.z+360.f;
+    }
+    else
+    {
+      for(int i = 1; i < gamutCuspTableSize; ++i)
+      {
+        if( h <= gamutCuspTable[i].z )
+        {
+          lo = gamutCuspTable[i-1];
+          hi = gamutCuspTable[i];
+          break;
+        }
+      }
+    }
+
+    float t = (h - lo.z) / (hi.z - lo.z);
+
+    float cuspJ = lerp(lo.x, hi.x, t);
+    float cuspM = lerp(lo.y, hi.y, t);
+
+    return float2(cuspJ,cuspM);
+  }
+
+
+  // find the LC coordinates of the smoothed boundary of the limiting gamaut in at the hue slice 'h' 
+  // by searching along the line defined by 'LCSource' and 'LCfocus'
+  // the function will search outwards from where the line intersects the achromatic axis with a staring incement of 'startStepSize'
+  // once the boundary has been crossed it will search in the opposite direction with half the step size
+  // and will repeat this as as many times as is set by the 'precision' paramter
+  float2 findBoundary(float2 LCSource, float2 LCfocus, float h, float3 XYZw, float3 XYZd65, float3x3 XYZ_to_RGB, float smoothing, int precision, float startStepSize )
+  {
+    float2 achromaticIntercept = float2(LCfocus.x - (((LCSource.x-LCfocus.x) / (LCSource.y-LCfocus.y))*LCfocus.y), 0.0f);
+
+    if( achromaticIntercept.x <= 0.0f || achromaticIntercept.x >= limitLmax )
+    {
+       return achromaticIntercept;
+    }
+
+    float stepSize = startStepSize;
+    float2 unitVector = normalize(achromaticIntercept - LCfocus);
+    float2 LCtest = achromaticIntercept;
+    int searchOutwards = 1;
+
+    for( int i = 0; i < precision; ++i )
+    {
+
+//      while( 1 )
+      for( int j = 0; j < precision; ++j )
+      {
+        LCtest = LCtest + unitVector * stepSize;
+        float3 XYZ = Oklab_LMS_to_XYZ(Lab_to_Oklab_LMS(LCh_to_Lab(float3(LCtest.x, LCtest.y, h))));
+        XYZ = apply_CAT(XYZ, XYZd65, XYZw, catType);
+        int inside = isInsideCube( vector_dot(XYZ_to_RGB, XYZ / referenceLuminance ), boundaryRGB, smoothing);
+
+        if( searchOutwards )
+        {
+          if( LCtest.x < 0.0f || LCtest.x > limitLmax || LCtest.y > limitCmax || !inside )
+          {
+            searchOutwards = 0;
+            stepSize = -fabs(stepSize) / 2.0f;
+            break;
+          }
+        }
+        else
+        {
+          if( LCtest.y < 0.0f || inside )
+          {
+            searchOutwards = 1;
+            stepSize = fabs(stepSize) / 2.0f;
+            break;
+          }
+        }
+      }
+    }
+
+    float2 LCboundary = float2( clamp(LCtest.x, 0.0f, limitLmax), clamp(LCtest.y, 0.0f, limitCmax) );
+
+    return LCboundary;
+  }
+
+  void init()
+  {
+    HALF_MIN = 0.0000000596046448f;
+    HALF_MAX = 65504.0f;
+
+    if( discountIlluminant )
+    {
+      cat_adaptDegree = 1.0f;
+    }
+    else
+    {
+      float viewingConditionsCoeff = 1.0f;
+
+      if( viewingConditions == 0 )
+      {
+        viewingConditionsCoeff = 0.8f;
+      }
+      else if( viewingConditions == 1 )
+      {
+        viewingConditionsCoeff = 0.9f;
+      }
+      else if( viewingConditions == 2 )
+      {
+        viewingConditionsCoeff = 1.0f;
+      }
+    }
+
+    st2084_m_1=2610.0f / 4096.0f * (1.0f / 4.0f);
+    st2084_m_2=2523.0f / 4096.0f * 128.0f;
+    st2084_c_1=3424.0f / 4096.0f;
+    st2084_c_2=2413.0f / 4096.0f * 32.0f;
+    st2084_c_3=2392.0f / 4096.0f * 32.0f;
+    st2084_m_1_d = 1.0f / st2084_m_1;
+    st2084_m_2_d = 1.0f / st2084_m_2;
+    st2084_L_p = 10000.0f;
+
+    float identity_matrix_data[]={ 1.0f, 0.0f, 0.0f,
+                                   0.0f, 1.0f, 0.0f,
+                                   0.0f, 0.0f, 1.0f };
+
+    float XYZ_to_LMS_Bradford_data[]={ 0.8951f, 0.2664f,-0.1614f,
+                                      -0.7502f, 1.7135f, 0.0367f,
+                                       0.0389f,-0.0685f, 1.0296f };
+
+    float XYZ_to_LMS_CAT02_data[]={ 0.7328f, 0.4296f,-0.1624f,
+                                   -0.7036f, 1.6975f, 0.0061f,
+                                    0.0030f, 0.0136f, 0.9834f };
+
+    float XYZ_to_LMS_Oklab_M1_data[]={
+        0.8189330101, 0.3618667424, -0.1288597137,
+        0.0329845436, 0.9293118715, 0.0361456387,
+        0.0482003018, 0.2643662691, 0.6338517070 };
+
+    float XYZ_to_LMS_Oklab_M2_data[]={
+        0.2104542553, 0.7936177850, -0.0040720468,
+        1.9779984951, -2.4285922050, 0.4505937099,
+        0.0259040371, 0.7827717662, -0.8086757660 };
+
+    identity_matrix.setArray(identity_matrix_data);
+    XYZ_to_LMS_Bradford.setArray(XYZ_to_LMS_Bradford_data);
+    XYZ_to_LMS_CAT02.setArray(XYZ_to_LMS_CAT02_data);
+    XYZ_to_LMS_M1.setArray(XYZ_to_LMS_Oklab_M1_data);
+    XYZ_to_LMS_M2.setArray(XYZ_to_LMS_Oklab_M2_data);
+
+    // Blink does not seem to support initialising multidimensional arrays
+    // So instead of being able to index the matrix data directly from one
+    // we need to use long if/else statements to populate the
+    // input, limit & output primary matrices
+    // (maybe there is a better way?)
+
+    float XYZ_to_AP0_ACES_matrix_data[]=
+    {
+       1.0498110175f,  0.0000000000f, -0.0000974845f,
+      -0.4959030231f,  1.3733130458f,  0.0982400361f,
+       0.0000000000f,  0.0000000000f,  0.9912520182f
+    };
+
+    float XYZ_to_AP1_ACES_matrix_data[]=
+    {
+       1.6410233797f, -0.3248032942f, -0.2364246952f,
+      -0.6636628587f,  1.6153315917f,  0.0167563477f,
+       0.0117218943f, -0.0082844420f,  0.9883948585f,
+    };
+
+    float XYZ_to_Rec709_D65_matrix_data[]=
+    {
+       3.2409699419f, -1.5373831776f, -0.4986107603f,
+      -0.9692436363f,  1.8759675015f,  0.0415550574f,
+       0.0556300797f, -0.2039769589f,  1.0569715142f,
+    };
+
+    float XYZ_to_Rec2020_D65_matrix_data[]=
+    {
+       1.7166511880f, -0.3556707838f, -0.2533662814f,
+      -0.6666843518f,  1.6164812366f,  0.0157685458f,
+       0.0176398574f, -0.0427706133f,  0.9421031212f,
+    };
+
+    float XYZ_to_P3_D65_matrix_data[]=
+    {
+       2.4934969119f, -0.9313836179f, -0.4027107845f,
+      -0.8294889696f,  1.7626640603f,  0.0236246858f,
+       0.0358458302f, -0.0761723893f,  0.9568845240f,
+    };
+
+    float XYZ_to_P3_DCI_matrix_data[]=
+    {
+       2.7253940305f, -1.0180030062f, -0.4401631952f,
+      -0.7951680258f,  1.6897320548f,  0.0226471906f,
+       0.0412418914f, -0.0876390192f,  1.1009293786f
+    };
+
+    // populate the input primaries matrix
+    if( primariesIn == 0 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_AP0_ACES_matrix_data);
+    }
+    else if( primariesIn == 1 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_AP1_ACES_matrix_data);
+    }
+    else if( primariesIn == 2 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_Rec709_D65_matrix_data);
+    }
+    else if( primariesIn == 3 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_Rec2020_D65_matrix_data);
+    }
+    else if( primariesIn == 4 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_P3_D65_matrix_data);
+    }
+    else if( primariesIn == 5 )
+    {
+      XYZ_to_RGB_input.setArray(XYZ_to_P3_DCI_matrix_data);
+    }
+    else
+    {
+      XYZ_to_RGB_input.setArray(identity_matrix_data);
+    }
+
+    // populate the limiting primaries matrix
+    if( primariesLimit == 0 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_AP0_ACES_matrix_data);
+    }
+    else if( primariesLimit == 1 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_AP1_ACES_matrix_data);
+    }
+    else if( primariesLimit == 2 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_Rec709_D65_matrix_data);
+    }
+    else if( primariesLimit == 3 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_Rec2020_D65_matrix_data);
+    }
+    else if( primariesLimit == 4 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_P3_D65_matrix_data);
+    }
+    else if( primariesLimit == 5 )
+    {
+      XYZ_to_RGB_limit.setArray(XYZ_to_P3_DCI_matrix_data);
+    }
+    else
+    {
+      XYZ_to_RGB_limit.setArray(identity_matrix_data);
+    }
+
+    // populate the output primaries matrix
+    if( primariesOut == 0 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_AP0_ACES_matrix_data);
+    }
+    else if( primariesOut == 1 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_AP1_ACES_matrix_data);
+    }
+    else if( primariesOut == 2 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_Rec709_D65_matrix_data);
+    }
+    else if( primariesOut == 3 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_Rec2020_D65_matrix_data);
+    }
+    else if( primariesOut == 4 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_P3_D65_matrix_data);
+    }
+    else if( primariesOut == 5 )
+    {
+      XYZ_to_RGB_output.setArray(XYZ_to_P3_DCI_matrix_data);
+    }
+    else
+    {
+      XYZ_to_RGB_output.setArray(identity_matrix_data);
+    }
+
+    RGB_to_XYZ_input = XYZ_to_RGB_input.invert();
+    RGB_to_XYZ_limit = XYZ_to_RGB_limit.invert();
+    RGB_to_XYZ_output = XYZ_to_RGB_output.invert();
+
+    float3x3 XYZ_to_RGB_sRGB;
+    XYZ_to_RGB_sRGB.setArray(XYZ_to_Rec709_D65_matrix_data);
+    float3 white(1.0f, 1.0f, 1.0f);
+
+    d65White = vector_dot(XYZ_to_RGB_sRGB.invert(), white);
+    inWhite = vector_dot(RGB_to_XYZ_input, white);
+    refWhite = vector_dot(RGB_to_XYZ_limit, white);
+
+    boundaryRGB = sstsLuminance.z / referenceLuminance;
+
+
+    //
+    // solving the RGB cusp from LCh is very expensive
+    // instead we go the other way and start with a RGB cusp sweep
+    // which is easily calculated by converting via HSV (Hue, 1.0, 1.0)
+    // we then convert each cusp to LCh and add them to a table 
+    //
+
+    gamutCuspTableSize = 360;
+    for( int i = 0; i < gamutCuspTableSize; ++i )
+    {
+      float hNorm = float(i) / (gamutCuspTableSize);
+      float3 RGB = HSV_to_RGB(float3(hNorm, 1.0f, 1.0f));
+      gamutCuspTableUnsorted[i] = limit_RGB_to_LCh(RGB);
+    }
+
+    int minhIndex = 0;
+    for( int i = 1; i < gamutCuspTableSize; ++i )
+    {
+      if( gamutCuspTableUnsorted[i].z <  gamutCuspTableUnsorted[minhIndex].z)
+      {
+        minhIndex = i;
+      }
+    }
+
+    for( int i = 0; i < gamutCuspTableSize; ++i )
+    {
+      gamutCuspTable[i] = gamutCuspTableUnsorted[(minhIndex+i)%gamutCuspTableSize];
+    }
+
+    // calculate the maximum expected J & M values for the given limit gamut
+    // these are used as limiting values for the gamut boundary searches
+
+    // limitLmax (asumed to match limitRGB white)
+    limitLmax = limit_RGB_to_LCh(float3(1.0f)).x;
+
+    // limitCmax (asumed to coincide with one of the RGBCMY corners of the limitRGB cube)
+    gamutCornersTable[0] = limit_RGB_to_LCh(float3(1.0f, 0.0f, 0.0f));
+    gamutCornersTable[1] = limit_RGB_to_LCh(float3(1.0f, 1.0f, 0.0f));
+    gamutCornersTable[2] = limit_RGB_to_LCh(float3(0.0f, 1.0f, 0.0f));
+    gamutCornersTable[3] = limit_RGB_to_LCh(float3(0.0f, 1.0f, 1.0f));
+    gamutCornersTable[4] = limit_RGB_to_LCh(float3(0.0f, 0.0f, 1.0f));
+    gamutCornersTable[5] = limit_RGB_to_LCh(float3(1.0f, 0.0f, 1.0f));
+
+    limitCmax = 0.0f;
+    for( int i = 0; i < 6; ++i )
+    {
+      limitCmax = max(limitCmax, gamutCornersTable[i].y);
+    }
+
+    // ensure positive, non-zero focus depth
+    // to avoid the gamut boundary search vector becoming zero for achromatic colors
+    // which will cause the boundary search loop to continue forever and the node to hang
+    focusDistanceClamped = max(0.01f, focusDistance);
+
+    // MacAdam limit approximation
+    // Approximated using: https://colab.research.google.com/drive/1-f0AM9fKA3lOojV8H-730afjyMWC26EX?usp=sharing
+    float MacAdam_bt2020[] =
+    {
+       2.26775149f, -1.43293879f,  0.1651873f,
+      -0.98535505f,  2.1260072f, -0.14065215f,
+      -0.02501605f, -0.26349465f,  1.2885107f
+    };
+    float MacAdam_p3d65[] =
+    {
+       2.0763642 , -1.20049804,  0.12413384,
+      -0.88022845,  1.96011755, -0.0798891,
+      -0.01253181, -0.27758506,  1.29011688
+    };
+    float MacAdam_bt709[] =
+    {
+       1.95630914, -1.06350026,  0.10719112,
+      -0.8793777 ,  1.92864324, -0.04926554,
+       0.0061942 , -0.29897333,  1.29277913
+    };
+
+    if (primariesLimit == 2)
+      {
+        M_to_RGBish.setArray(MacAdam_bt709);
+      }
+    else if (primariesLimit == 3)
+      {
+        M_to_RGBish.setArray(MacAdam_bt2020);
+      }
+    else if (primariesLimit == 4)
+      {
+        M_to_RGBish.setArray(MacAdam_p3d65);
+      }
+    else
+      {
+        M_to_RGBish.setArray(identity_matrix_data);
+      }
+  }
+
+  float3 compressGamut( float3 inputLCh, int invert, float distanceGainCalcJ )
+  {
+    if (!applyGamutCompression)
+    {
+      return inputLCh;
+    }
+
+    float3 XYZ = apply_CAT(refWhite * sstsLuminance.y, refWhite, d65White, catType);
+    float sstsMidJ = Oklab_LMS_to_Lab(XYZ_to_Oklab_LMS(XYZ)).x;
+    float2 LCinput = float2(inputLCh.x, inputLCh.y);
+    float2 LCcusp = cuspFromTable( inputLCh.z);
+
+    float focusL = lerp(LCcusp.x, sstsMidJ, cuspMidBlend);
+
+    float focusDistanceGain = 1.0f;
+
+    if( distanceGainCalcJ > focusL )
+    {
+      focusDistanceGain = (limitLmax - focusL) / max(0.0001f, (limitLmax - min(limitLmax, distanceGainCalcJ)));
+    }
+    else
+    {
+      focusDistanceGain = (focusL) / max(0.0001f, distanceGainCalcJ);
+    }
+
+    float2 LCfocus = float2( focusL, -LCcusp.y*focusDistanceClamped*focusDistanceGain );
+    float2 vecToFocus = (LCfocus - LCinput);
+    float2 achromaticIntercept = float2(LCfocus.x - (((LCinput.x-LCfocus.x) / (LCinput.y-LCfocus.y))*LCfocus.y), 0.0f);
+
+    // to reduce the number of expensive boundary finding iterations needed
+    // we taking an educated guess at a good starting step size
+    // based on how far the sample is either above or below the gamut cusp
+    float cuspToTipRatio;
+    if( LCinput.x > LCcusp.x )
+    {
+      cuspToTipRatio = (LCinput.x - LCcusp.x) / (limitLmax - LCcusp.x);
+    }
+    else
+    {
+      cuspToTipRatio = (LCcusp.x - LCinput.x) / (LCcusp.x);
+    }
+
+    float startStepSize = lerp(LCcusp.y / 3.0f, 0.1f, cuspToTipRatio);
+    float2 LCboundary = findBoundary(LCinput, LCfocus,  inputLCh.z, refWhite, d65White, XYZ_to_RGB_limit, smoothCusps, boundarySolvePrecision, startStepSize);
+    float normFact = 1.0f / max(0.0001f, length(LCboundary - achromaticIntercept));
+    float v = length(LCinput-achromaticIntercept) * normFact;
+    float vCompressed = compressPowerP(v, compressionFuncParams.x, compressionFuncParams.y, compressionFuncParams.z, invert);
+    float2 LCcompressed = 0.0f;
+    // hack to stop nan values after compression
+    if (LCinput.y != 0.0f)
+    {
+      LCcompressed = achromaticIntercept + normalize(LCinput-achromaticIntercept)*vCompressed/normFact;
+    }
+    else
+    {
+      LCcompressed = LCinput;
+    }
+    return float3(LCcompressed.x, LCcompressed.y, inputLCh.z);
+  }
+
+  // apply the forward gamut compression to the limiting primaries
+  float3 compressGamutForward(float3 LCh)
+  {
+    float3 LChcompressed = compressGamut( LCh, 0, LCh.x );
+    return LChcompressed;
+  }
+
+  float2 approximateShape(float3 lab, float C)
+  {
+    float a = lab.y / C;
+    float b = lab.z / C;
+
+    float a2 = 2.0f * a * b;
+    float b2 = a * a - b * b;
+    float a3 = 3.0f * a - 4.0f * a * a * a;
+    float b3 = -3.0f * b + 4.0f * b * b * b;
+
+    if (primariesLimit == 2)
+      {
+        return float2(
+          1.45502420e+00 + -7.65623334e-02*a +  2.26234241e-01*b +  6.25596210e-02*a2 +  3.16995726e-02*b2 + 4.46107711e-02*a3 +  3.49876286e-02*b3,
+          2.69987106e-01 + 1.69987106e-02*a +   1.00116716e-03*b +  1.02594717e-02*a2 + -6.08142494e-04*b2 + 2.29845394e-03*a3 + 2.13300284e-03*b3
+        );
+      }
+    else if (primariesLimit == 3)
+      {
+        // TODO
+        return float2(
+          1.45502420e+00 + -7.65623334e-02*a +  2.26234241e-01*b +  6.25596210e-02*a2 +  3.16995726e-02*b2 + 4.46107711e-02*a3 +  3.49876286e-02*b3,
+          2.69987106e-01 + 1.69987106e-02*a +   1.00116716e-03*b +  1.02594717e-02*a2 + -6.08142494e-04*b2 + 2.29845394e-03*a3 + 2.13300284e-03*b3
+        );
+      }
+    else if (primariesLimit == 4)
+      {
+        // TODO
+        return float2(
+          1.45502420e+00 + -7.65623334e-02*a +  2.26234241e-01*b +  6.25596210e-02*a2 +  3.16995726e-02*b2 + 4.46107711e-02*a3 +  3.49876286e-02*b3,
+          2.69987106e-01 + 1.69987106e-02*a +   1.00116716e-03*b +  1.02594717e-02*a2 + -6.08142494e-04*b2 + 2.29845394e-03*a3 + 2.13300284e-03*b3
+        );
+      }
+    else
+      {
+        return float2(a, b);
+      }
+  }
+
+  float3 approximateGamutMap(float3 LMS)
+  {
+    float I = getMidAndPurity(LMS).x;
+    float3 lab = Oklab_LMS_to_Lab(LMS);
+    float C = Lab_to_LCh(lab).y;
+    float2 ST = approximateShape(lab, C);
+    float i_max = max(LMS.x, max(LMS.y, LMS.z));
+//    float C_smooth = 1.0f / ((ST.x / I) + (ST.y / (1.0f - I)));
+    float C_smooth = 1.0f / ((ST.x / I) + (ST.y / I));
+//    float C_smooth = 1.8f;
+
+    return (LMS - I) / sqrt(C * C / C_smooth / C_smooth + 1.0f) + I;
+  }
+
+  float forwardMmTonescale(float x)
+  {
+    float tc = 0.0f;
+
+    if (x < 0.18) {
+      tc = cs * spow(x, c0);
+    } else {
+      tc = c0 * (x - 0.18) + 0.18;
+    }
+
+    float ts = s1 * spow((tc / (s0 + tc)), p);
+    float tf = ts * ts / (ts + fl);
+
+    return tf;
+  }
+
+  // Derivative according to Mathematica FullSimplify[D[forwardMmTonescale[x], x]]
+  float d_forwardMmTonescale(float x)
+  {
+    float tc1, tf2, pp;
+
+    if (x < 0.18) {
+      tc1 = cs * spow(x, c0);
+      pp = 2.0f * p;
+    } else {
+      tc1 = c0 * (x - 0.18) + 0.18;
+      pp = 2.0f * p - 1.0f;
+    }
+
+    float tc = tc1 / (tc1 + s0);
+    float ts1 = s1 * spow(tc, p) + (2.0f * fl);
+    float ts2 = spow(s1 * spow(tc, p) + fl, 2.0f);
+    float tf1 = (c0 * p * s0 * s1 * s1 * spow(tc, pp)) * ts1;
+    
+    if (x < 0.18) {
+      tf2 = x * (tc1 + s0) * ts2;
+    } else {
+      tf2 = spow(tc1 + s0, 2.0f) * ts2;
+    }
+
+    if (tf2 == 0.0f)
+      tf2 = 0.0000000001f;
+    float tf = tf1 / tf2;
+
+    return tf;
+  }
+
+  // Find mid(RGB) and purity
+  float2 getMidAndPurity(float3 LMS)
+  {
+    if (applyMacAdamLimit)
+      LMS = vector_dot(M_to_RGBish, LMS);
+
+    float i_min = min(max(0.0, LMS.x), min(max(0.0, LMS.y), max(0.0, LMS.z)));
+    float i_max = max(LMS.x, max(LMS.y, LMS.z));
+
+    // Mid point and purity (saturation)
+    float m = 0.5 * (i_max + i_min);
+    float s = i_max - i_min;
+
+    // Smoothing
+    if (s == 0.0f)
+      s = 0.0000000001f;
+    float3 y = (LMS - m) / s;
+    m = m + dot(y * y * y, float3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f)) * s;
+    s = sqrt(dot(LMS - m, LMS - m) / 2.0f);
+
+    return float2(m, s);
+  }
+
+  float getIntensity(float3 LMS)
+  {
+    float2 MP = getMidAndPurity(LMS);
+    float I = MP.x + (1.0f - desat_offset) * MP.y;
+    return I;
+  }
+
+  float3 extractChroma(float3 LMS, float I, float linearI)
+  {
+    if (I == 0.0f)
+      I = 0.000000001f;
+    return ((LMS / I) * linearI) - linearI;
+  }
+
+  float3 forwardTonescale(float3 LMS, float I)
+  {
+    if (!mmTonescaleMode)
+      return LMS;
+
+    float linearI = spow(I, 3) / referenceLuminance;
+    float3 chroma = extractChroma(LMS, I, linearI);
+
+    float TS = forwardMmTonescale(linearI) * mmScaleFactor;
+    if (TS == 0.0f)
+      TS = 0.000000001f;
+    float3 outLMS = (1.0f + chroma_scale * chroma *
+                     (d_forwardMmTonescale(linearI) * mmScaleFactor) / TS);
+
+    outLMS *= spow(TS, 1.0f / 3.0f);
+
+    return outLMS;
+  }
+
+  void process()
+  {
+    SampleType(src) source = src();
+    float3 srcRGB(source.x, source.y, source.z);
+    float3 dstRGB, lab;
+    float3 LMS = XYZ_to_Oklab_LMS(input_RGB_to_XYZ(srcRGB));
+    float I;
+
+    I = getIntensity(LMS);
+    if (useLightness) {
+      lab = Oklab_LMS_to_Lab(LMS);
+      I = lab.x;
+    }
+
+    LMS = forwardTonescale(LMS, I);
+
+    if (applyGamutCompression) {
+      if (applyGamutApproximation) {
+        LMS = approximateGamutMap(LMS);
+      } else {
+        float3 LCh = Lab_to_LCh(Oklab_LMS_to_Lab(LMS));
+        LCh = compressGamutForward(LCh);
+        LMS = Lab_to_Oklab_LMS(LCh_to_Lab(LCh));
+      }
+    }
+    dstRGB = XYZ_to_output_RGB(Oklab_LMS_to_XYZ(LMS));
+
+    dst() = float4(dstRGB.x, dstRGB.y, dstRGB.z, source.w);
+  }
+};

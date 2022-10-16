@@ -1165,12 +1165,11 @@ kernel Okish_DRT_v1_Kernel : ImageComputationKernel<ePixelWise>
     float3 lab = Oklab_LMS_to_Lab(LMS);
     float C = Lab_to_LCh(lab).y;
     float2 ST = approximateShape(lab, C);
-    float i_max = max(LMS.x, max(LMS.y, LMS.z));
-//    float C_smooth = 1.0f / ((ST.x / I) + (ST.y / (1.0f - I)));
-    float C_smooth = 1.0f / ((ST.x / I) + (ST.y / I));
-//    float C_smooth = 1.8f;
 
-    return (LMS - I) / sqrt(C * C / C_smooth / C_smooth + 1.0f) + I;
+    float C_smooth = 1.0f / ((ST.x / I) + (ST.y / (1.0f - I)));
+    LMS = (LMS - I) / sqrt(C * C / C_smooth / C_smooth + 1.0f) + I;
+
+    return LMS;
   }
 
   float forwardMmTonescale(float x)

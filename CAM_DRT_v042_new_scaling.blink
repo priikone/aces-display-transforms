@@ -1537,37 +1537,6 @@ float3 uncompress_bjorn(float3 xyz)
     return f / (f + toe);
   }
 
-  float3 softSaturate(float3 x, float3 a)
-  {
-    float soft = 0.2f;
-    a = clamp3(a, 0.0f, soft);
-    a = 1.0f + a;
-    x = min(x, a);
-    float3 b = (a - 1.0f) * sqrt(a / (2.0f - a));
-    return 1.0f - (sqrt((x - a) * (x - a) + b * b) - b) / (sqrt(a * a + b * b) - b);
-  }
-
-  float3 softclip_RGB(float3 RGB)
-  {
-    float grey = 0.18f;
-    float3 x = RGB - grey;
-
-    float3 xsgn = sign(x);
-    float3 xscale = 0.5f + xsgn * (0.5f - grey);
-    x /= xscale;
-
-    float maxRGB = max(RGB.x, max(RGB.y, RGB.z));
-    float minRGB = min(RGB.x, min(RGB.y, RGB.z));
-
-    float soft = 0.4f; 
-    float softness_0 = maxRGB / (1.0f + soft) * soft;
-    float softness_1 = (1.0f- minRGB) / (1.0f + soft) * soft;
-
-    float3 softness = float3(0.5f) * (softness_0 + softness_1 + xsgn * (softness_1 - softness_0));
-
-    return grey + xscale * xsgn * softSaturate(fabs(x), softness);
-  }
-
   // In-gamut chroma compression
   //
   // Compresses colors inside the gamut with the aim for colorfulness to have an
@@ -1591,7 +1560,6 @@ float3 uncompress_bjorn(float3 xyz)
     float snJ = max(0.0f, 1.0f - nJ);
     float shd = compress_shadows(TS / limitJmax);
     float scale = pow(JMh.x / origJ, 1.0f / (0.59f * 1.9272f));
-    scale *= (scaleM + scaleM2 * snJ);
     float Mcusp = cusp_with_eccentricity_factor(JMh.z);
 
     M = !invert ? M * scale : M;

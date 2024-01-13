@@ -2041,6 +2041,18 @@ float3 uncompress_bjorn(float3 xyz)
 
   float3 compressGamut(float3 JMh, int invert)
   {
+    return compressGamut2(JMh, 0, JMh.x);
+  }
+
+  float3 compressGamutInv(float3 JMh, int invert)
+  {
+    float x = compressGamut2(JMh, 1, JMh.x).x;
+//    x = compressGamut2(JMh, 1, x).x;
+    return compressGamut2(JMh, 1, x);
+  }
+
+  float3 compressGamut2(float3 JMh, int invert, float x)
+  {
     if (iterativeGamutCompressor)
     {
         return compressGamutIterative(  JMh,  invert,  JMh.x );
@@ -2077,13 +2089,13 @@ float3 uncompress_bjorn(float3 xyz)
     float slope_gain = limitJmax * focusDistance;
 
     float focusDistanceGain;
-    if (JMh.x > focusJ)
+    if (x > focusJ)
     {
-      focusDistanceGain = pow((limitJmax - focusJ) / max(0.0001f, (limitJmax - min(limitJmax, JMh.x))), focusAdjustB);
+      focusDistanceGain = pow((limitJmax - focusJ) / max(0.0001f, (limitJmax - min(limitJmax, x))), focusAdjustB);
     }
     else
     {
-      focusDistanceGain = pow(focusJ / max(0.0001f, JMh.x), focusAdjustD);
+      focusDistanceGain = pow(focusJ / max(0.0001f, x), focusAdjustD);
     }
     slope_gain *= focusDistanceGain;
 
@@ -2899,7 +2911,8 @@ float3 uncompress_bjorn(float3 xyz)
     if( invert )
     {
       compressedJMh = output_RGB_to_JMh(srcRGB);
-      tonemappedJMh = compressGamut(compressedJMh, 1);
+//      tonemappedJMh = compressGamut(compressedJMh, 1);
+      tonemappedJMh = compressGamutInv(compressedJMh, 1);
       JMh = inverseTonescale(tonemappedJMh);
       diagnostic = JMh_to_input_RGB(JMh);
     }

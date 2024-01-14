@@ -8,8 +8,7 @@ kernel DRT_CAM_Kernel : ImageComputationKernel<ePixelWise>
     //
     // Input Parameters
     //
-float focusAdjustB;
-float focusAdjustD;
+
     // Encoding of the Input Image
     // 0: Linear
     // 1: ACEScct
@@ -123,6 +122,8 @@ float focusAdjustD;
 
     // Focus distance of the compression focal point from the achromatic axis
     float focusDistance;
+    float focusAdjustB;
+    float focusAdjustD;
 
     // Gamut Compression Fuction Parameters
     // Threshold / min Limit / max Limit / Power
@@ -2046,8 +2047,9 @@ float3 uncompress_bjorn(float3 xyz)
 
   float3 compressGamutInv(float3 JMh, int invert)
   {
-    float x = compressGamut2(JMh, 1, JMh.x).x;
-//    x = compressGamut2(JMh, 1, x).x;
+    float x = JMh.x;
+    x = compressGamut2(JMh, 1, x).x;
+    x = compressGamut2(JMh, 1, x).x;
     return compressGamut2(JMh, 1, x);
   }
 
@@ -2911,7 +2913,6 @@ float3 uncompress_bjorn(float3 xyz)
     if( invert )
     {
       compressedJMh = output_RGB_to_JMh(srcRGB);
-//      tonemappedJMh = compressGamut(compressedJMh, 1);
       tonemappedJMh = compressGamutInv(compressedJMh, 1);
       JMh = inverseTonescale(tonemappedJMh);
       diagnostic = JMh_to_input_RGB(JMh);
@@ -2927,7 +2928,7 @@ float3 uncompress_bjorn(float3 xyz)
     if ( diagnosticMode == 1 || diagnosticMode == 6 )
     {
       // Mode 6 actually returns XYZ, mode 1 returns real JMh
-      if( invert )
+      if (diagnosticMode == 6)
       {
         diagnostic =  JMh_to_input_RGB(srcRGB);
       }

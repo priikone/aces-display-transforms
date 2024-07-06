@@ -16,7 +16,7 @@ param:
   // 4: Gamma 2.6
   // 5: ST2084
   int encodingIn;
-float pp;
+
   // AP1 clamp
   bool AP1Clamp;
 
@@ -1438,8 +1438,7 @@ local:
     float nJ    = JMh.x / limitJmax;
     float snJ   = max(0.0f, 1.0f - nJ);
     float Mnorm = chromaCompressNorm(JMh.z);
-    float limit = pow(nJ, model_gamma) * cReachFromTable(JMh.z) / ((pp * 2.0f) * Mnorm);
-//    float limit = pow(nJ, model_gamma) * cReachFromTable(JMh.z) / Mnorm;
+    float limit = pow(nJ, model_gamma) * cReachFromTable(JMh.z) / Mnorm;
 
     if (!invert)
     {
@@ -1451,8 +1450,7 @@ local:
       if (applyInGamutCompression || applyInGamutExpansion)
       {
         // Normalize M with the rendering space cusp M
-        M /= (pp * 2.0f) * Mnorm;
-//        M /= Mnorm;
+        M /= Mnorm;
 
         // Expand the colorfulness by running the toe function in reverse.  The goal is to
         // expand less saturated colors less and more saturated colors more.  The expansion
